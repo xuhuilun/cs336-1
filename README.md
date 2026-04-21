@@ -49,7 +49,7 @@ cd ..
 ```
 
 # 执行顺序
-train_bpe：训练分词器
-preprocess：根据分词器将文本转为二进制，方便模型读取
-main_train：读取二进制文件，训练大模型
-inference：调用大模型推理，进行对话
+1.train_bpe：训练分词器. 
+2.preprocess：根据分词器将文本转为二进制，方便模型读取. 
+3.main_train：读取二进制文件，训练大模型. 
+4.inference：调用大模型推理，进行对话. 
