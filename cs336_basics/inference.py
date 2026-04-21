@@ -32,7 +32,7 @@ def load_trained_tokenizer(vocab_path, merges_path, special_tokens=["<|endoftext
         print(f"错误: 找不到分词器文件。\nVocab: {vocab_path}\nMerges: {merges_path}")
         sys.exit(1)
     
-    
+    # 初始化字节与可见字符的映射表 int -> str 和反向映射 str -> int
     byte_encoder = bytes_to_unicode()
     byte_decoder = {v: k for k, v in byte_encoder.items()}
 
@@ -40,6 +40,7 @@ def load_trained_tokenizer(vocab_path, merges_path, special_tokens=["<|endoftext
         vocab_raw = json.load(f)
         # 将可见字符串还原为原始 bytes
         vocab = {
+            # 因为涉及到很多字符操作，所以vocab中的值是可见字符，我们需要通过 byte_decoder 将它们还原回原始 bytes，最终得到 ID -> bytes 的映射
             int(k): bytes([byte_decoder[c] for c in v]) 
             for k, v in vocab_raw.items()
         }
@@ -81,7 +82,7 @@ def main():
     
     args = parser.parse_args()
 
-    # 1. 加载 Tokenizer
+    # 1. 加载 Tokenizer分词器
     vocab_path = os.path.join(args.tokenizer_dir, "vocab.json")
     merges_path = os.path.join(args.tokenizer_dir, "merges.txt")
     tokenizer = load_trained_tokenizer(vocab_path, merges_path)
@@ -102,7 +103,7 @@ def main():
         device=args.device
     )
 
-    # 3. 加载权重
+    # 3. 加载已经训练好的大模型权重
     print(f"正在加载权重: {args.checkpoint_path}")
     if not os.path.exists(args.checkpoint_path):
         print("错误: 找不到 Checkpoint 文件")
@@ -116,16 +117,19 @@ def main():
         state_dict = checkpoint # 兼容直接保存 state_dict 的情况
         
     try:
+        # 加载权重到模型中，严格匹配参数名称和形状
         model.load_state_dict(state_dict)
     except RuntimeError as e:
         print(f"权重加载失败！请检查模型参数是否与训练时一致。\n详细错误: {e}")
         return
 
+    # 将模型切换到评估模式，并移动到指定设备
     model.to(args.device)
-    model.eval() # 极其重要：切换到评估模式
+    model.eval()
     print("模型加载完成！")
 
     # 4. 交互式生成循环
+    # 4.1 打印欢迎信息和使用说明
     print("\n" + "="*30)
     print("开始对话 (输入 'q' 或 'exit' 退出)")
     print("="*30 + "\n")
@@ -139,7 +143,7 @@ def main():
             if not user_input.strip():
                 continue
 
-            # 编码输入
+            # 将用户输入编码为 token ID 列表，并转换为 PyTorch 张量，准备输入模型进行生成
             input_ids = tokenizer.encode(user_input)
             input_tensor = torch.tensor([input_ids], dtype=torch.long, device=args.device)
 

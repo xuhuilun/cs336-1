@@ -95,6 +95,7 @@ def silu_fn(in_features):
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
         super().__init__()
+        # 隐藏层维度
         self.d_ff = d_ff
         self.d_model = d_model
         # W1 和 W3 是并行升维层: d_model -> d_ff
@@ -105,7 +106,7 @@ class SwiGLU(nn.Module):
         
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
+        # 门控
         gate = silu_fn(self.w1(x))
         signal = self.w3(x)
         # 形状: [..., d_ff]
@@ -146,9 +147,9 @@ class RotaryPositionalEmbedding(nn.Module):
         cos = self.cos_cached[token_positions]
         sin = self.sin_cached[token_positions]
 
-        # 2. 维度对齐
-        # 只有当 x 是 4D (含 Head 维) 且 cos 是 3D (含 Batch 维) 时，才需要手动插入 Head 维。
-        # 对于 test_rope 这种 3D x vs 2D cos 的情况，PyTorch 会自动左侧补 1，无需操作。
+        # 2. 维度对齐（Batch，Head，Sequence，d_k）
+        # 只有当 x 是 4D (含 Head 维) 且 cos 是 3D (含 Batch 维，但不含Head维) 时，才需要手动插入 Head 维。
+        # 对于 test_rope 这种 3D x vs 2D cos 的情况，PyTorch 会自动左侧补 1，代表batch，无需操作。
         if x.ndim > cos.ndim and cos.ndim >= 3:
             cos = cos.unsqueeze(1)
             sin = sin.unsqueeze(1)
@@ -169,9 +170,10 @@ class RotaryPositionalEmbedding(nn.Module):
     
 
 def softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-        # 1. 为了数值稳定性，减去指定维度上的最大值
+        # 1. 为了数值稳定性，减去指定维度上的最大值，防止指数函数溢出
         # dim=-1 通常是 Transformer 中的隐藏层或词表维度
         x_max = torch.max(x, dim=dim, keepdim=True).values
+        # 相对于最大值的输入，数值更稳定
         x_stable = x - x_max
         
         # 2. 计算指数
@@ -194,6 +196,9 @@ def scaled_dot_product_attention(
     K: (batch_size, ..., m, d_k)
     V: (batch_size, ..., m, d_v)
     mask: (..., n, m) 或者是可以广播到该形状的布尔张量 (True 表示关注, False 表示屏蔽)
+    对于Q：计算每个查询向量与所有键向量的点积，得到一个分数矩阵 (batch_size, ..., n, m)，表示每个查询与每个键的相关性。
+    V：值向量，包含了与键相关的信息。最终输出是每个查询的加权和，其中权重由分数矩阵经过 softmax 归一化得到。
+    
     """
     d_k = Q.size(-1)
     
@@ -262,12 +267,13 @@ class CausalSelfAttention(nn.Module):
             if token_positions is None:
                 # 适配各种 Batch 维度，使用 expand 比 repeat 更高效
                 batch_dims = x.shape[:-2]
+                # *解包 batch_dims
                 token_positions = torch.arange(s, device=x.device).expand(*batch_dims, s)
             
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # 生成下三角矩阵
+        # 生成下三角矩阵，s 是token序列长度，形状为 (s, s)，True 表示允许关注，False 表示屏蔽
         mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
 
         # 步骤 5: SDPA (SDPA 内部应能处理 mask 为 None 的情况)
@@ -275,6 +281,7 @@ class CausalSelfAttention(nn.Module):
         
         # 步骤 6 & 7: 合并与输出投影
         attn_out = rearrange(attn_out, '... h s d -> ... s (h d)')
+        # 这里的输出投影是一个线性层，输入维度是 d_model，输出维度也是 d_model
         return self.output_proj(attn_out)
 
 
@@ -289,7 +296,15 @@ class TransformerBlock(nn.Module):
                  norm_mode: str = "pre",   # 选项: "pre", "post"
                  ffn_type: str = "swiglu"  # 选项: "swiglu", "silu"
                  ):
+      
+        """
+        theta: RoPE 的基准频率，通常为 10000
+        use_rms_norm: 是否使用 RMSNorm (Ablation 1)
+        norm_mode: 归一化模式，"pre" 表示 Pre-norm (Llama 默认)，"post" 表示 Post-norm (原始 Transformer, Ablation 2)
+        ffn_type: FFN 类型，"swiglu" 表示使用 SwiGLU，"silu" 表示使用标准 FFN (Linear -> SiLU -> Linear)，Ablation 4
+        """
         super().__init__()
+        # 均方根归一化，不再计算均值，只计算均方根
         self.use_rms_norm = use_rms_norm
         self.norm_mode = norm_mode
         self.ffn_type = ffn_type
@@ -316,14 +331,18 @@ class TransformerBlock(nn.Module):
 
         # 3. 初始化 FFN (Ablation 4)
         if ffn_type == "swiglu":
+            # SwiGLU：（x*w1） SiLU(x*w3) -> w2 -> out
             self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
         elif ffn_type == "silu":
             # 标准 FFN: x -> Linear -> SiLU -> Linear -> out
             # 注意: 为了公平对比，通常 SiLU FFN 的 d_ff 应该是 4 * d_model
             d_ff = 4 * d_model
             self.ffn = nn.Sequential(
+                # 升维度
                 Linear(d_model, d_ff, device=device, dtype=dtype),
+                # 激活函数
                 nn.SiLU(),
+                # 降维度
                 Linear(d_ff, d_model, device=device, dtype=dtype)
             )
         else:
@@ -332,6 +351,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor = None) -> torch.Tensor:
         # Pre-norm (Llama 默认, 也是作业基准)
         # 公式: x = x + Sublayer(Norm(x))
+        # 归一化-注意力层-残差连接-归一化-FFN层-残差连接
         if self.norm_mode == "pre":
             x = x + self.attn(self.ln1(x), token_positions=token_positions)
             x = x + self.ffn(self.ln2(x))
@@ -340,6 +360,7 @@ class TransformerBlock(nn.Module):
         # 公式: x = Norm(x + Sublayer(x))
         elif self.norm_mode == "post":
             # 注意: Post-norm 通常很难训练，需要 Warmup
+            # 注意力层-残差连接-归一化-FFN层-残差连接-归一化
             x = self.ln1(x + self.attn(x, token_positions=token_positions))
             x = self.ln2(x + self.ffn(x))
             
@@ -379,6 +400,7 @@ class TransformerLM(nn.Module):
             self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
         else:
             """
+            ln：linear normalization
             forward(input):
                 return input
             """
@@ -390,13 +412,13 @@ class TransformerLM(nn.Module):
         self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-
+        # batch_size, seq_len = token_ids.shape
         b, s = token_ids.shape
         
         # 准备位置信息用于 RoPE, shape: [S] -> [1, S] -> [B,S]
         token_positions = torch.arange(s, device=token_ids.device).unsqueeze(0).expand(b, s)
         
-        # 1. Embedding
+        # 1. Embedding 【Batch, Seq_len, d_model】
         x = self.token_embeddings(token_ids)
         
         # 2. 逐层通过 Transformer Blocks
@@ -408,6 +430,7 @@ class TransformerLM(nn.Module):
         
         # 4. 投影到词表空间得到 logits
         return self.lm_head(x)
+    
 
     @torch.no_grad()
     def generate(
@@ -435,12 +458,13 @@ class TransformerLM(nn.Module):
         generated = prompt_ids.clone()
         
         for _ in range(max_new_tokens):
+            # generated根据已有的token，预测下一个token
             # 1. 裁剪输入：模型只能处理 context_length 长度的内容
             # 如果生成的序列过长，只取最后的 context_length 个词
             idx_cond = generated[:, -self.context_length:]
             
             # 2. 前向传播得到 Logits
-            # 我们只关心最后一个时间步的预测
+            # 我们只关心最后一个token时间步的预测
             logits = self.forward(idx_cond) # (Batch, T, Vocab)
             logits = logits[:, -1, :]      # (Batch, Vocab)
             
@@ -448,7 +472,7 @@ class TransformerLM(nn.Module):
             if temperature != 1.0:
                 logits = logits / (temperature + 1e-8) # 加个 epsilon 防止除以 0
             
-            # 4. 应用 Top-P (Nucleus Sampling) 过滤
+            # 4. 应用 Top-P (Nucleus Sampling) 过滤，保留概率累积超过 p 的最小词表子集
             if top_p < 1.0:
                 logits = self._top_p_filter(logits, top_p)
             
@@ -460,6 +484,8 @@ class TransformerLM(nn.Module):
             generated = torch.cat((generated, next_token), dim=1)
             
             # 7. 如果遇到了 EOS，提前结束生成
+            # 改为如果一个batch生成EOS，就结束该batch的生成，其他batch继续生成
+            
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
                 
@@ -485,8 +511,9 @@ class TransformerLM(nn.Module):
         sorted_indices_to_remove[..., 0] = False
         
         # 将被移除的 Token 分数设为负无穷
-        # 这里需要利用 scatter 将排序后的掩码映射回原始词表索引位置
+        # 这里需要利用 scatter 将排序后的掩码映射回原始词表索引位置，false代表保留，true代表移除
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        # 将被移除的 Token 分数设为负无穷，这样它们在 softmax 后的概率为 0
         logits = logits.masked_fill(indices_to_remove, float('-inf'))
         
         return logits

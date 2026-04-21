@@ -15,7 +15,7 @@ def train_bpe(
     该函数 BPE 算法的核心流程：
     1. 初始化词表为所有可能的字节 (0-255)。
     2.  读取输入语料，并根据特殊 Token 进行切分，确保特殊 Token 不参与统计。
-    3. 使用 GPT-2 的预分词正则将语料库切分成单词，并统计每个单词的频率。
+    3. 使用 GPT-2 的预分词正则将语料库切分成单词，并统计每个单词的频率。遍历单词中的相邻字节对，统计它们的全局频率，并建立倒排索引以支持快速更新。
     4. 迭代进行“合并”操作，直到达到目标词表大小。
        - 合并策略：总是选择当前出现频率最高、且在字典序上最大的字节对。
     5. 使用倒排索引优化合并过程中的频率更新，确保速度。
@@ -58,6 +58,7 @@ def train_bpe(
         # 过滤掉从 parts 中提取出的特殊 Token 本身，只保留用于 BPE 训练的普通文本片段。
         # text = "Hello World World<|endoftext|>Hello happy happy<|endoftext|>!"
         # train_segments =  ['Hello World World', 'Hello happy happy', '!']
+        # 特殊token分割后的文本片段列表 --- IGNORE ---
         train_segments = [p for p in parts if p not in special_tokens]
     else:
         # 如果没有特殊 Token，直接使用整个语料。
@@ -75,8 +76,9 @@ def train_bpe(
     # raw_counts: 存储每个“单词”（预分词后的结果）及其出现频率。
     # 单词被表示为字节元组，例如 "hello" -> (b'h', b'e', b'l', b'l', b'o')
     raw_counts = Counter()
+    # 遍历每个文本片段，对其进行预分词，并统计每个单词UTF-8字节序列的频率
     for segment in train_segments:
-        # 对每个语料片段应用预分词正则，找到所有“单词”
+        # 对每个语料片段应用预分词正则，找到所有“单词”，包括前导空格和标点符号等。
         words = gpt2_pat.findall(segment)
         for word in words:
             # 将单词转换为 UTF-8 字节序列，然后组成元组作为 Counter 的键, 统计这个元组出现的频次
@@ -97,6 +99,7 @@ def train_bpe(
                     (b'\xe4',b'\xbd',b'\xa0',b'\xe5',b'\xa5',b'\xbd'):20, # 你好
                 }
             """
+            # 将单词转换为 UTF-8 字节序列，并统计频率 
             raw_counts[tuple(bytes([b]) for b in word.encode("utf-8"))] += 1
             
     # --- 构建高效数据结构以支持快速合并 ---
@@ -115,6 +118,7 @@ def train_bpe(
     
     # indices: 倒排索引。存储 pair -> {包含该 pair 的单词在 words_list 中的下标集合}
     # 这个结构是性能优化的关键，用于快速找到需要更新的单词。
+    # 根据 pair 快速找到words_list包含该 pair 的单词索引集合
     indices = defaultdict(set)
     
     # --- 初始化 `stats` 和 `indices` ---
@@ -238,7 +242,8 @@ def train_bpe(
 
     return vocab, merges
 
-
+# 将0-255的字节映射到可见的Unicode字符，GPT-2源码中的标准做法
+# 避免在处理文本（如split、join操作时）时出现不可见字符导致的问题，同时确保所有字节都有对应的可见表示，方便调试和存储。
 def bytes_to_unicode():
     """
     创建一个映射，将 0-255 字节映射为一组可见的 Unicode 字符。

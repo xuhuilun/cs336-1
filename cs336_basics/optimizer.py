@@ -9,6 +9,7 @@ class AdamW(Optimizer):
         # 1. 基本参数检查
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
+        # betas 是一个包含两个元素的元组，分别对应一阶矩和二阶矩的衰减率
         if not 0.0 <= betas[0] < 1.0:
             raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
         if not 0.0 <= betas[1] < 1.0:
@@ -22,30 +23,35 @@ class AdamW(Optimizer):
 
     @torch.no_grad()
     def step(self):
-        """执行单步优化更新"""
+        """执行单步优化更新，并更新一阶矩和二阶矩的估计。"""
         loss = None
-
+        # 遍历每个参数组（可以有多个参数组，每个组可以有不同的超参数）
         for group in self.param_groups:
             beta1, beta2 = group['betas']
             eps = group['eps']
             lr = group['lr']
+            # AdamW 的核心特性：解耦的权重衰减。与传统 Adam 不同，权重衰减在更新参数后直接应用，而不是通过修改梯度来实现。
             wd = group['weight_decay']
-
+            # 遍历当前参数组中的每个参数
             for p in group['params']:
                 if p.grad is None:
                     continue
                 
                 grad = p.grad
+                # 保存每个参数的状态信息，包括一阶矩、二阶矩和步数
                 state = self.state[p]
 
                 # 3. 状态初始化 (第一次运行步时执行)
                 if len(state) == 0:
+                    # step: 记录优化器更新的步数，用于计算偏差校正
                     state['step'] = 0
                     # m: 一阶矩 (梯度的指数移动平均)
                     state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
                     # v: 二阶矩 (梯度平方的指数移动平均)
                     state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
+
+                # 提取状态中的一阶矩和二阶矩，以及当前步数
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 t = state['step']
@@ -60,6 +66,7 @@ class AdamW(Optimizer):
                 # 这一步是为了消除初始值为 0 带来的偏移
                 bias_correction1 = 1 - beta1 ** t
                 bias_correction2 = 1 - beta2 ** t
+                # 初始时梯度过于小，调整学习率适当增大，使其适应当前的步数和矩估计
                 step_size = lr * (math.sqrt(bias_correction2) / bias_correction1)
 
                 # 6. 更新参数：theta = theta - alpha_t * m / (sqrt(v) + eps)
@@ -71,6 +78,7 @@ class AdamW(Optimizer):
                 # 7. 应用解耦的权重衰减 (AdamW 的核心特性)
                 # theta = theta - alpha * lambda * theta
                 # p.add_(other, alpha=1.0) p=p+(alpha×other)
+                # wd 是 weight_decay 的缩写，代表权重衰减系数 lambda
                 if wd != 0:
                     p.add_(p, alpha=-lr * wd)
 
@@ -99,6 +107,7 @@ def clip_gradient_norm(parameters: Iterable[torch.nn.Parameter], max_norm: float
         # 使用 .detach() 确保计算范数的操作不计入计算图
         param_norm = torch.norm(p.grad.detach(), p=2) # 算出当前这一层梯度的长度 L_i
         total_norm += param_norm.item() ** 2         # 把 L_i 的平方累加到总和中
+    # 全局范数是所有参数梯度长度的平方和的平方根
     total_norm = total_norm ** 0.5
     
     # 3. 检查是否超过阈值

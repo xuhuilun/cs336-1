@@ -15,10 +15,11 @@ class SGD(torch.optim.Optimizer):
             raise ValueError(f"Invalid learning rate: {lr}")
         defaults = {"lr": lr}
         super().__init__(params, defaults)
-
+    @torch.no_grad()
     def step(self):
         loss = None
         for group in self.param_groups:
+            # 不同的组可以有不同的学习率等超参数
             lr = group["lr"]
             for p in group["params"]:
                 if p.grad is None:
@@ -30,11 +31,10 @@ class SGD(torch.optim.Optimizer):
                     state["t"] = 0
                 
                 t = state["t"]
-                grad = p.grad.data
+                grad = p.grad
                 
                 # 执行 PDF 中的更新公式 (20): p = p - (lr / sqrt(t+1)) * grad
-                p.data -= lr / math.sqrt(t + 1) * grad
-                
+                p.add_(grad, alpha=-lr / math.sqrt(t + 1)) # 等价于上面一行，但更高效（原地更新）
                 # 更新步数
                 state["t"] += 1
         return loss

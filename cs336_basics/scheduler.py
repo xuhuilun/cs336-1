@@ -25,13 +25,13 @@ def get_lr_cosine_schedule(
     if it > cosine_cycle_iters:
         return min_learning_rate
     
-    # 3. 余弦退火阶段
+    # 3. 余弦退火阶段，在预热阶段和退火结束阶段之间，学习率从 max_learning_rate 逐渐降低到 min_learning_rate
     # 计算当前在退火阶段的进度 (0.0 到 1.0)
     decay_ratio = (it - warmup_iters) / (cosine_cycle_iters - warmup_iters)
     
-    # 计算余弦系数：从 1.0 降到 0.0
+    # 计算余弦系数：从 1.0 降到 0.0，学习率变化速率：快慢快
     # math.cos(math.pi * decay_ratio) 的范围是 [1, -1]
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     
-    # 最终学习率 = 最小值 + 系数 * (最大值 - 最小值)
+    # 最终学习率 = 最小值 + 余弦退火系数 * (最大值 - 最小值)
     return min_learning_rate + coeff * (max_learning_rate - min_learning_rate)

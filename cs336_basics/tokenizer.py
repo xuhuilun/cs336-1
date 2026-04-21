@@ -43,11 +43,12 @@ class BPETokenizer:
         
         # 3. 构建特殊 Token 的正则表达式
         if self.special_tokens:
-            # 关键：必须按照长度从长到短排序（reverse=True）。
+            # 关键：特殊token必须按照长度从长到短排序（reverse=True）。
             # 这样正则引擎会优先匹配最长的特殊标记，防止重叠标记（如 <|a|><|b|>）被错误拆分。
             sorted_special = sorted(self.special_tokens, key=len, reverse=True)
             # 使用 re.escape 确保标记中的特殊字符（如 | 或 [ ）被当作普通字符处理
             special_pattern = "|".join(re.escape(t) for t in sorted_special)
+
             self.special_regex = re.compile(special_pattern)
         else:
             self.special_regex = None
@@ -157,7 +158,8 @@ class BPETokenizer:
                 # 在当前序列的所有相邻对中，寻找合并优先级最高（Rank 最小）的一对，即按照构造merge时添加pair的顺序进行合并
                 best_pair = None
                 min_rank = float('inf')
-                
+                # 遍历单词的所有相邻字节对，检查它们是否在 merges 规则中出现过
+                # 找到rank排名最高的字节对进行合并
                 for i in range(len(byte_parts) - 1):
                     pair = (byte_parts[i], byte_parts[i+1])
                     if pair in self.merges:
@@ -183,7 +185,8 @@ class BPETokenizer:
                     else:
                         new_byte_parts.append(byte_parts[i])
                         i += 1
-                byte_parts = new_byte_parts # 更新序列，进入下一轮 while 循环
+                # 对于Hello：merges合并规则还没有完全合并完，继续下一轮 while 循环，直到无法合并为止
+                byte_parts = new_byte_parts
             
             # 第四步：将合并到极限后的所有字节块转换为词表中的 ID
             for part in byte_parts:

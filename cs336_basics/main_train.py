@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--train_data_path", type=str, required=True)
     parser.add_argument("--valid_data_path", type=str, required=True)
     parser.add_argument("--out_dir", type=str, default="out")
+    # 默认cuda，如果没有GPU则自动回退到CPU
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     # --- WandB 设置 ---
@@ -110,16 +111,20 @@ def main():
 
     # 7. 主训练循环
     for it in range(start_iter, args.max_iters):
-        # A. 更新学习率
+        # A. 更新学习率，余弦退火
         lr = get_lr_cosine_schedule(it, args.lr, args.min_lr, args.warmup_iters, args.max_iters)
+        # 将更新后的学习率应用到优化器的参数组中
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
         # B. 训练步
+        # 开启训练模式，确保模型启用 dropout 等训练特定行为
         model.train()
+        # 从训练数据中获取一个批次的输入 (x) 和目标 (y)，并将它们移动到指定设备上
         x, y = get_batch(train_data, args.batch_size, args.context_length, args.device)
-        
+        # 前向传播，
         logits = model(x)
+        # 计算交叉熵损失，logits 的形状是 (batch_size, context_length, vocab_size)，y 的形状是 (batch_size, context_length)，cross_entropy 会自动处理维度并计算平均损失
         loss = cross_entropy(logits, y)
         
         optimizer.zero_grad()
