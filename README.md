@@ -48,8 +48,16 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+# 显卡
+AutoDL平台 4090
+python 3.10 （版本太高的话4090不支持）
+
+
 # 执行顺序
 1.train_bpe：训练分词器. 
+
 2.preprocess：根据分词器将文本转为二进制，方便模型读取. 
+
 3.main_train：读取二进制文件，训练大模型. 
+
 4.inference：调用大模型推理，进行对话. 
